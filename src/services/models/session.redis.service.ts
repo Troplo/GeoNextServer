@@ -2,11 +2,23 @@ import { Injectable } from '@nestjs/common';
 import { BaseRedisService } from './base.redis.service';
 import { randomUUID } from 'node:crypto';
 import { Session } from '../../classes/sessions/Session';
+import { PlayerRedisService } from './player.redis.service';
+import { RedisService } from '../redis.service';
 
 const DEFAULT_SESSION_EXPIRY = 259200;
 
 @Injectable()
-export class SessionRedisService extends BaseRedisService {
+export class SessionRedisService extends BaseRedisService<Session> {
+  constructor(
+    private readonly playerService: PlayerRedisService,
+    redisService: RedisService,
+  ) {
+    super(redisService);
+  }
+
+  protected baseKey = 'session';
+  protected ctor = Session;
+
   /**
    *
    * @param expiry - in seconds (default 3 days)
@@ -19,14 +31,24 @@ export class SessionRedisService extends BaseRedisService {
   } = {}): Promise<string> {
     const redis = this.getRedis();
     const token = randomUUID();
-    const sessionId = `sessions:${token}`;
+    const sessionId = `session:${token}`;
 
-    const playerId = randomUUID();
+    const player = await this.playerService.create({
+      player: {
+        tpuId: null,
+        name: 'Anonymous',
+      },
+    });
+
+    // something went seriously wrong
+    if (!player) return '';
 
     const sessionData = JSON.stringify({
       createdAt: new Date().toISOString(),
-      playerId,
+      playerId: player.id,
     });
+
+    console.log(sessionData);
 
     if (expiry) {
       await redis.set(sessionId, sessionData, 'EX', expiry);
@@ -44,7 +66,7 @@ export class SessionRedisService extends BaseRedisService {
     expiry?: number | null;
     token: string;
   }): Promise<boolean> {
-    const key = `sessions:${token}`;
+    const key = `session:${token}`;
     const redis = this.getRedis();
     const exists = await redis.exists(key);
 
@@ -62,14 +84,6 @@ export class SessionRedisService extends BaseRedisService {
   }
 
   async lookup({ token }: { token: string }): Promise<Session | null> {
-    const key = `sessions:${token}`;
-    const redis = this.getRedis();
-    const result = await redis.get(key);
-
-    if (result) {
-      return JSON.parse(result) as Session;
-    }
-
-    return null;
+    return this.lookupInternal(token);
   }
 }

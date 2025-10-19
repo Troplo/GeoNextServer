@@ -11,6 +11,11 @@ import { GameGateway } from '../gateways/game.gateway';
 import { RoomRedisService } from '../services/models/room.redis.service';
 import { RoomService } from '../services/room.service';
 import { RoomControllerV1 } from '../controllers/v1/room.controller';
+import { PlayerRedisService } from '../services/models/player.redis.service';
+import { RoomPlayerRedisService } from '../services/models/roomPlayer.redis.service';
+import { PlayerGatewayController } from '../controllers/gateway/player.controller';
+import { RoomGatewayController } from '../controllers/gateway/room.controller';
+import { RoomPlayerService } from '../services/roomPlayer.service';
 
 @Module({
   imports: [],
@@ -24,11 +29,16 @@ import { RoomControllerV1 } from '../controllers/v1/room.controller';
     ConfigService,
     RedisService,
     AuthService,
+    PlayerRedisService,
+    RoomPlayerRedisService,
     SessionRedisService,
     RoomRedisService,
     RoomService,
     AppService,
     GameGateway,
+    RoomPlayerService,
+    PlayerGatewayController,
+    RoomGatewayController,
   ],
 })
 export class AppModule {}

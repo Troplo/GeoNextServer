@@ -1,27 +1,15 @@
 import { Injectable } from '@nestjs/common';
 import { BaseRedisService } from './base.redis.service';
-import { randomUUID } from 'node:crypto';
 import { Room } from '../../classes/rooms/Room';
 
 @Injectable()
-export class RoomRedisService extends BaseRedisService {
+export class RoomRedisService extends BaseRedisService<Room> {
+  protected baseKey = 'room';
+  protected ctor = Room;
+  idKey = 'name';
+
   async lookup({ name }: { name: string | null }): Promise<Room | null> {
-    if (!name) return null;
-
-    const key = `room:${name}`;
-
-    const room = await this.getRedis().get(key);
-    if (room) {
-      try {
-        const roomParsed = JSON.parse(room) as Room;
-        console.log(room, roomParsed, new Room(roomParsed));
-        return new Room(roomParsed);
-      } catch {
-        return null;
-      }
-    }
-
-    return null;
+    return this.lookupInternal(name);
   }
 
   async create({
@@ -43,5 +31,17 @@ export class RoomRedisService extends BaseRedisService {
     await this.getRedis().set(key, JSON.stringify(room));
 
     return room;
+  }
+
+  async update({
+    update,
+    where,
+  }: {
+    update: Partial<Room>;
+    where: {
+      roomName: string;
+    };
+  }): Promise<false | Room> {
+    return this.updateInternal(where.roomName, update);
   }
 }

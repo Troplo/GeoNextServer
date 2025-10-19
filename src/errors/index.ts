@@ -14,6 +14,8 @@ export const ErrorDefinitions = {
   ROOM_NAME_MIN_CHAR: 'The room name must be at least 3 characters.',
   ROOM_NAME_MAX_CHAR: 'The room name must be at most 64 characters.',
   UNAUTHORIZED: 'Unauthorized.',
+  ALREADY_IN_GAME:
+    "You are already in the game, you can't rejoin at this time.",
 } as const;
 
 type ErrorKey = keyof typeof ErrorDefinitions;

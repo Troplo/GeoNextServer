@@ -1,4 +1,6 @@
 import { RoomPlayer } from './RoomPlayer';
+import { redisDirect } from '../../services/redis.service';
+import { Player } from '../players/Player';
 
 export enum GameMode {
   CLASSIC = 'classic',
@@ -13,6 +15,26 @@ export enum ScoreMode {
 export enum AreaMode {
   NOMINATIM = 'nominatim',
   POLYGON = 'polygon',
+}
+
+export class Round {
+  constructor(options?: Partial<Round>) {
+    if (options) {
+      Object.assign(this, options);
+      if (options.latitude && typeof options.latitude !== 'number') {
+        this.latitude = parseFloat(options.latitude);
+      }
+      if (options.longitude && typeof options.longitude !== 'number') {
+        this.longitude = parseFloat(options.longitude);
+      }
+    }
+  }
+
+  round: number;
+  latitude: number;
+  longitude: number;
+  warning: boolean;
+  version: number = 1;
 }
 
 export class RoomConfig {
@@ -39,7 +61,7 @@ export class RoomConfig {
   timeAttackSelected: boolean = false;
   timeLimitation: number = 0;
   zoomControl: boolean = true;
-  bboxObj: number[] = [];
+  bboxObj: number[] | undefined;
   version: number = 1;
 }
 
@@ -49,8 +71,12 @@ export class Room {
       Object.assign(this, options);
       // make sure nested objects are proper instances
       if (options.config) this.config = new RoomConfig(options.config);
-      if (options.players)
-        this.players = options.players.map((p) => new RoomPlayer(p));
+      if (options.rounds?.length) {
+        this.rounds = [];
+        for (const round of options.rounds) {
+          this.rounds.push(new Round(round));
+        }
+      }
     }
   }
 
@@ -58,6 +84,48 @@ export class Room {
   ownerPlayerId: string;
   started: boolean = false;
   config: RoomConfig = new RoomConfig();
-  players: RoomPlayer[] = [];
   version: number = 1;
+  rounds: Round[] = [];
+  players?: RoomPlayer[] | null;
+  currentRound: number = 0;
+
+  async getPlayers(): Promise<RoomPlayer[]> {
+    if (!redisDirect) return [];
+    const players = await redisDirect?.get(`room:${this.name}:players`);
+
+    if (!players) return [];
+
+    try {
+      const parsed = JSON.parse(players) as RoomPlayer[];
+
+      const importedPlayers: RoomPlayer[] = [];
+
+      for (const player of parsed) {
+        const roomPlayer = new RoomPlayer(player);
+        roomPlayer.player = await roomPlayer.getPlayer();
+        importedPlayers.push(roomPlayer);
+      }
+      return importedPlayers;
+    } catch (e) {
+      console.error(e);
+      return [];
+    }
+  }
+
+  getRoundIsValid(roundId: number): boolean {
+    const round = this.rounds.find((rnd) => rnd.round === roundId);
+    return !!round && roundId <= this.currentRound;
+  }
+
+  getRound(roundId: number): Round | null {
+    const round = this.rounds.find((rnd) => rnd.round === roundId);
+    return round || null;
+  }
+
+  async dispose(): Promise<boolean> {
+    if (!redisDirect) return false;
+    await redisDirect.del(`room:${this.name}:players`);
+    await redisDirect.del(`room:${this.name}`);
+    return true;
+  }
 }

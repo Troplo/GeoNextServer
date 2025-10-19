@@ -2,6 +2,9 @@ import { Injectable } from '@nestjs/common';
 import Redis from 'ioredis';
 import { ConfigService } from './config.service';
 
+// Not recommended
+export let redisDirect: Redis | null;
+
 @Injectable()
 export class RedisService {
   private readonly redis: Redis;
@@ -14,6 +17,7 @@ export class RedisService {
       db: redisConfig.db,
       port: redisConfig.port,
     });
+    redisDirect = this.redis;
   }
 
   getInstance() {
