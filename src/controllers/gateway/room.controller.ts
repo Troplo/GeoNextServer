@@ -10,13 +10,14 @@ import { GeoError } from '../../errors';
 import { RoomService } from '../../services/room.service';
 import { RoomPlayerRedisService } from '../../services/models/roomPlayer.redis.service';
 import { GameSocketServerEvent } from '../../types/socket/serverEvents';
-import { Round } from '../../classes/rooms/Room';
+import { Room, RoomState, Round } from '../../classes/rooms/Room';
 import { RoomPlayerService } from '../../services/roomPlayer.service';
 
 @Injectable()
 export class RoomGatewayController {
   constructor(
     private readonly roomService: RoomService,
+    // fix circular dependency
     @Inject(forwardRef(() => GameGateway))
     private readonly gateway: GameGateway,
     private readonly roomPlayerRedisService: RoomPlayerRedisService,
@@ -28,58 +29,64 @@ export class RoomGatewayController {
     _data: RequestType<GameSocketClientEvents['CREATE_ROOM']>,
     socket: SocketWithUser,
   ) {
-    if (!socket.game || !socket.game.playerId)
+    if (!socket.game || !socket.game.playerId || socket.game.currentRoom)
       throw new GeoError('MALFORMED_REQUEST');
-    const data =
-      this.gateway.parse<GameSocketClientEvents['CREATE_ROOM']>(_data);
-    if (!data.data.name) throw new GeoError('MALFORMED_REQUEST');
-    if (data.data.name.length > 64) throw new GeoError('ROOM_NAME_MAX_CHAR');
-    if (data.data.name.length < 3) throw new GeoError('ROOM_NAME_MIN_CHAR');
-    const room =
-      (await this.roomService.lookup({ name: data.data.name })) ||
-      (await this.roomService.create({
-        name: data.data.name,
-        ownerPlayerId: socket.game.playerId,
-      }));
+    socket.game.currentRoom = 'PENDING';
+    try {
+      const data =
+        this.gateway.parse<GameSocketClientEvents['CREATE_ROOM']>(_data);
+      if (!data.data.name) throw new GeoError('MALFORMED_REQUEST');
+      if (data.data.name.length > 64) throw new GeoError('ROOM_NAME_MAX_CHAR');
+      if (data.data.name.length < 3) throw new GeoError('ROOM_NAME_MIN_CHAR');
+      const room =
+        (await this.roomService.lookup({ name: data.data.name })) ||
+        (await this.roomService.create({
+          name: data.data.name,
+          ownerPlayerId: socket.game.playerId,
+        }));
 
-    if (!room) throw new GeoError('ROOM_NAME_UNAVAILABLE');
+      if (!room) throw new GeoError('ROOM_NAME_UNAVAILABLE');
 
-    if (
-      !(await this.roomService.join({
+      if (
+        !(await this.roomService.join({
+          roomName: data.data.name,
+          playerId: socket.game.playerId,
+          socketId: socket.id,
+        }))
+      )
+        throw new GeoError('ROOM_NAME_UNAVAILABLE');
+      await socket.join(`room:${data.data.name}`);
+      socket.game.currentRoom = data.data.name;
+
+      room.players = await room.getPlayers();
+
+      const roomPlayer = await this.roomPlayerRedisService.lookup({
         roomName: data.data.name,
         playerId: socket.game.playerId,
-        socketId: socket.id,
-      }))
-    )
-      throw new GeoError('ROOM_NAME_UNAVAILABLE');
-    await socket.join(`room:${data.data.name}`);
-    socket.game.currentRoom = data.data.name;
+      });
 
-    room.players = await room.getPlayers();
+      if (!roomPlayer) throw new GeoError('ROOM_NAME_UNAVAILABLE');
 
-    const roomPlayer = await this.roomPlayerRedisService.lookup({
-      roomName: data.data.name,
-      playerId: socket.game.playerId,
-    });
+      roomPlayer.player = await roomPlayer.getPlayer();
 
-    if (!roomPlayer) throw new GeoError('ROOM_NAME_UNAVAILABLE');
+      this.gateway.emitToPlayer({
+        data: room,
+        socket,
+        event: GameSocketServerEvent.CREATE_ROOM_RESPONSE,
+        id: data.id,
+      });
 
-    roomPlayer.player = await roomPlayer.getPlayer();
-
-    this.gateway.emitToPlayer({
-      data: room,
-      socket,
-      event: GameSocketServerEvent.CREATE_ROOM_RESPONSE,
-      id: data.id,
-    });
-
-    this.gateway.emitToRoom({
-      data: roomPlayer,
-      event: GameSocketServerEvent.ROOM_PLAYER_JOINED,
-      excludeUser: true,
-      id: data.id,
-      socket,
-    });
+      this.gateway.emitToRoom({
+        data: roomPlayer,
+        event: GameSocketServerEvent.ROOM_PLAYER_JOINED,
+        excludeUser: true,
+        id: data.id,
+        socket,
+      });
+    } catch (e) {
+      socket.game.currentRoom = null;
+      throw e;
+    }
   }
 
   async gameStart(
@@ -100,7 +107,7 @@ export class RoomGatewayController {
     )
       return;
 
-    await this.roomService.update({
+    const newRoom = await this.roomService.update({
       where: {
         roomName: room.name,
       },
@@ -164,9 +171,10 @@ export class RoomGatewayController {
         data: round,
         socket,
       });
+      await this.roomService.setState(room, RoomState.IN_GAME);
     }
 
-    await this.roomService.update({
+    const newRoom = await this.roomService.update({
       update: {
         rounds: room.rounds,
         currentRound: room.currentRound,
@@ -175,6 +183,8 @@ export class RoomGatewayController {
         roomName: room.name,
       },
     });
+
+    if (newRoom) await this.roomService.setState(newRoom, RoomState.IN_GAME);
   }
 
   async gameCommitGuess(
@@ -217,66 +227,79 @@ export class RoomGatewayController {
       },
       socket,
     });
+
+    await this.checkGameProgressState(room);
+  }
+
+  async checkGameProgressState(room: Room) {
+    const players = await room.getPlayers();
+
+    // STATE: PROGRESS ROUND
+
+    const shouldProgressRound = players.every((plyr) =>
+      plyr.rounds.some((rnd) => rnd.round === room.currentRound && rnd.guessed),
+    );
+
+    if (shouldProgressRound && room.state === RoomState.IN_GAME) {
+      await this.roomService.setState(room, RoomState.ROUND_FINISHED);
+    }
+
+    // STATE: EXIT GAME
+
+    if (players.filter((plyr) => plyr.readyToLeave).length === players.length) {
+      this.gateway.emitToRoomName({
+        event: GameSocketServerEvent.GAME_FINISHED,
+        data: {},
+        roomName: room.name,
+      });
+      await room.dispose();
+      await this.roomService.quitRoom(room.name);
+    }
   }
 
   async gameReadyToLeave(
     _data: RequestType<GameSocketClientEvents['GAME_READY_TO_LEAVE']>,
     socket: SocketWithUser,
   ) {
-    console.log(
-      'GAME READY TO LEAVE',
-      socket.game.currentRoom,
-      socket.game.playerId,
-    );
     if (!socket.game.currentRoom || !socket.game.playerId) return;
 
     const room = await this.roomService.lookup({
       name: socket.game.currentRoom,
     });
 
+    if (!room) return;
+
     const roomPlayer = await this.roomPlayerRedisService.lookup({
       roomName: socket.game.currentRoom,
       playerId: socket.game.playerId,
     });
 
-    console.log(room, roomPlayer);
+    if (!roomPlayer?.canLeave(room.config.nbRoundSelected)) return;
 
-    if (
-      !room ||
-      !roomPlayer ||
-      !roomPlayer.canLeave(room.config.nbRoundSelected)
-    )
-      return;
+    await this.roomPlayerRedisService.update({
+      update: {
+        readyToLeave: true,
+      },
+      where: {
+        roomName: socket.game.currentRoom,
+        playerId: socket.game.playerId,
+      },
+    });
 
-    const players = await room.getPlayers();
+    await this.checkGameProgressState(room);
+  }
 
-    console.log(
-      players.filter((plyr) => plyr.readyToLeave).length ===
-        players.length - 1 || players.length === 1,
-    );
+  async gameRoomLeave(
+    _data: RequestType<GameSocketClientEvents['ROOM_LEAVE']>,
+    socket: SocketWithUser,
+  ) {
+    const { data } =
+      this.gateway.parse<GameSocketClientEvents['ROOM_LEAVE']>(_data);
 
-    // -1 because the current user is the last user, and they want to leave
-    if (
-      players.filter((plyr) => plyr.readyToLeave).length ===
-        players.length - 1 ||
-      players.length === 1
-    ) {
-      this.gateway.emitToRoom({
-        event: GameSocketServerEvent.GAME_FINISHED,
-        data: {},
-        socket,
-      });
-      await room.dispose();
-    } else {
-      await this.roomPlayerRedisService.update({
-        update: {
-          readyToLeave: true,
-        },
-        where: {
-          roomName: socket.game.currentRoom,
-          playerId: socket.game.playerId,
-        },
-      });
-    }
+    const room = await this.roomService.lookup({ name: data.roomName });
+
+    if (!room || !socket.game?.playerId) return;
+
+    await this.roomService.quitRoom(room.name, socket.game.playerId);
   }
 }

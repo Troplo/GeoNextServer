@@ -1,4 +1,5 @@
 import { RoomConfig } from '../../classes/rooms/Room';
+import { EmptyObject } from './serverEvents';
 
 export enum GameSocketClientEvent {
   CREATE_ROOM = 'CREATE_ROOM',
@@ -19,15 +20,13 @@ export interface GameSocketClientEvents {
     name: string;
   };
   [GameSocketClientEvent.ROOM_UPDATE_CONFIG]: {
-    roomId: string;
+    roomName: string;
     config: RoomConfig;
   };
   [GameSocketClientEvent.ROOM_LEAVE]: {
-    roomId: string;
+    roomName: string;
   };
-  [GameSocketClientEvent.GAME_START]: {
-    //
-  };
+  [GameSocketClientEvent.GAME_START]: EmptyObject;
   [GameSocketClientEvent.GAME_POPULATE_ROUND_INFO]: {
     round: number;
     latitude: number;
@@ -42,5 +41,5 @@ export interface GameSocketClientEvents {
     timePassed: number;
     round: number;
   };
-  [GameSocketClientEvent.GAME_READY_TO_LEAVE]: {};
+  [GameSocketClientEvent.GAME_READY_TO_LEAVE]: EmptyObject;
 }

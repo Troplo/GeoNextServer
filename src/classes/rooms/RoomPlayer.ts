@@ -41,6 +41,7 @@ export class RoomPlayer {
   player?: Player | null;
   rounds: RoomPlayerRound[] = [];
   readyToLeave: boolean = false;
+  roomName: string;
 
   async getPlayer(): Promise<Player | null> {
     if (!redisDirect) return null;
@@ -70,5 +71,21 @@ export class RoomPlayer {
   canLeave(nbRound: number): boolean {
     const rounds = this.rounds.filter((rnd) => rnd.guessed);
     return rounds.length + 1 >= nbRound;
+  }
+
+  async dispose(): Promise<boolean> {
+    if (!redisDirect) return false;
+
+    const key = `room:${this.roomName}:players`;
+    const players = await redisDirect?.get(key);
+    if (!players) return false;
+    try {
+      let parsed = JSON.parse(players) as RoomPlayer[];
+      parsed = parsed.filter((plyr) => plyr.playerId === this.playerId);
+      await redisDirect.set(key, JSON.stringify(parsed));
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

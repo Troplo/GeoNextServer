@@ -19,7 +19,7 @@ export class PlayerRedisService extends BaseRedisService<Player> {
   async create({
     player,
   }: {
-    player: Omit<Player, 'id' | 'version'>;
+    player: Omit<Player, 'id' | 'version' | 'lastRoom'>;
   }): Promise<Player | null> {
     return this.createInternal(player);
   }

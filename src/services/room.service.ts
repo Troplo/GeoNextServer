@@ -1,14 +1,20 @@
-import { Injectable } from '@nestjs/common';
+import { forwardRef, Inject, Injectable } from '@nestjs/common';
 import { RoomRedisService } from './models/room.redis.service';
-import { Room } from '../classes/rooms/Room';
+import { Room, RoomState } from '../classes/rooms/Room';
 import { RoomPlayerRedisService } from './models/roomPlayer.redis.service';
-import { GeoError } from '../errors';
+import { GameGateway, SocketWithUser } from '../gateways/game.gateway';
+import { GameSocketServerEvent } from '../types/socket/serverEvents';
+import { PlayerRedisService } from './models/player.redis.service';
 
 @Injectable()
 export class RoomService {
   constructor(
     private readonly roomRedisService: RoomRedisService,
     private readonly roomPlayerRedisService: RoomPlayerRedisService,
+    // fix circular dependency
+    @Inject(forwardRef(() => GameGateway))
+    private readonly gateway: GameGateway,
+    private readonly playerService: PlayerRedisService,
   ) {}
 
   async lookup({ name }: { name: string | null }): Promise<Room | null> {
@@ -22,7 +28,19 @@ export class RoomService {
     name: string;
     ownerPlayerId: string;
   }): Promise<Room | false> {
-    return this.roomRedisService.create({ name, ownerPlayerId });
+    const room = await this.roomRedisService.create({ name, ownerPlayerId });
+
+    if (room)
+      await this.playerService.update({
+        update: {
+          lastRoom: room.name,
+        },
+        where: {
+          playerId: ownerPlayerId,
+        },
+      });
+
+    return room;
   }
 
   async join({
@@ -57,13 +75,32 @@ export class RoomService {
           playerId,
         },
       });
+
+      await this.playerService.update({
+        update: {
+          lastRoom: roomName,
+        },
+        where: {
+          playerId,
+        },
+      });
+
       return !!success;
     } else if (!room.started) {
       const success = await this.roomPlayerRedisService.create({
         roomName,
         playerId,
       });
-      console.log(success);
+
+      await this.playerService.update({
+        update: {
+          lastRoom: roomName,
+        },
+        where: {
+          playerId,
+        },
+      });
+
       return !!success;
     }
 
@@ -156,5 +193,69 @@ export class RoomService {
     const players = await room.getPlayers();
 
     return !!players.find((plyr) => plyr.playerId === playerId);
+  }
+
+  async setState(room: Room, state: RoomState) {
+    if (room.state !== state) {
+      room._setState(state);
+      await room.update();
+      this.gateway.emitToRoomName({
+        roomName: room.name,
+        event: GameSocketServerEvent.GAME_STATE_UPDATED,
+        data: {
+          round: room.currentRound,
+          state: state,
+        },
+      });
+    }
+  }
+
+  async quitRoom(roomName: string, playerId?: string) {
+    const name = `room:${roomName}`;
+    const room = this.gateway.server.sockets.adapter.rooms.get(name);
+
+    if (!room) return;
+
+    for (const socketId of room) {
+      const socket = this.gateway.server.sockets.sockets.get(
+        socketId,
+      ) as SocketWithUser;
+      if (socket && (socket.game?.playerId === playerId || !playerId)) {
+        if (socket.game?.currentRoom === roomName)
+          socket.game.currentRoom = null;
+        await socket.leave(roomName);
+
+        if (playerId) {
+          // Notify other players that the user has left
+          const roomPlayer = await this.roomPlayerRedisService.lookup({
+            playerId,
+            roomName,
+          });
+          if (roomPlayer) {
+            await roomPlayer.dispose();
+            this.gateway.emitToRoomName({
+              event: GameSocketServerEvent.ROOM_PLAYER_LEFT,
+              data: roomPlayer,
+              roomName,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  async getDisconnectedRoom(playerId: string): Promise<Room | null> {
+    const player = await this.playerService.lookup({ playerId });
+    if (!player) return null;
+    if (player.lastRoom) {
+      const room = await this.lookup({ name: player.lastRoom });
+      if (!room) return null;
+      const players = await room.getPlayers();
+      if (players.find((plyr) => plyr.playerId === playerId)) {
+        return room;
+      }
+    }
+
+    return null;
   }
 }

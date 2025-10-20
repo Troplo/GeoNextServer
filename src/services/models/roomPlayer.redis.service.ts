@@ -23,11 +23,9 @@ export class RoomPlayerRedisService extends BaseRedisService<RoomPlayer> {
     const key = this.key(roomName);
 
     const roomPlayers = await this.getRedis().get(key);
-    console.log(roomPlayers, ' 1players parsed');
     if (roomPlayers) {
       try {
         const playersParsed = JSON.parse(roomPlayers) as RoomPlayer[];
-        console.log(playersParsed, 'players parsed');
         for (const player of playersParsed) {
           console.log(player.playerId, playerId);
           if (player.playerId === playerId) {
@@ -95,6 +93,7 @@ export class RoomPlayerRedisService extends BaseRedisService<RoomPlayer> {
 
     const newPlayer = new RoomPlayer({
       playerId,
+      roomName,
     });
 
     console.log(newPlayer);

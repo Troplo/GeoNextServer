@@ -9,4 +9,5 @@ export class Player {
   name: string;
   tpuId: number | null = null;
   version: number = 1;
+  lastRoom: string | null = null;
 }

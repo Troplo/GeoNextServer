@@ -6,19 +6,21 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import { AuthService } from '../services/auth.service';
-import { Socket } from 'socket.io';
+import { Socket, Server } from 'socket.io';
 import {
   GameSocketClientEvent,
   GameSocketClientEvents,
 } from '../types/socket/clientEvents';
-import { GameSocketEventsServer } from '../types/socket/serverEvents';
+import {
+  GameSocketEventsServer,
+  GameSocketServerEvent,
+} from '../types/socket/serverEvents';
 import { GeoError } from '../errors';
-import { RoomService } from '../services/room.service';
-import { PlayerRedisService } from '../services/models/player.redis.service';
-import { RoomPlayerRedisService } from '../services/models/roomPlayer.redis.service';
 import { RoomGatewayController } from '../controllers/gateway/room.controller';
 import { PlayerGatewayController } from '../controllers/gateway/player.controller';
 import { RequestType } from '../utils/gateway';
+import { RoomService } from '../services/room.service';
+import { forwardRef, Inject } from '@nestjs/common';
 
 export interface SocketWithUser extends Socket {
   game: {
@@ -35,20 +37,37 @@ export class GameGateway {
     private readonly authService: AuthService,
     private readonly roomGw: RoomGatewayController,
     private readonly playerGw: PlayerGatewayController,
+    @Inject(forwardRef(() => RoomService))
+    private readonly roomService: RoomService,
   ) {}
 
-  @WebSocketServer() server;
+  @WebSocketServer() server: Server;
 
   async handleConnection(socket: SocketWithUser) {
     const token = socket.handshake.auth.token as string | null;
     const session = await this.authService.getSessionInfo(token);
-    console.log(session);
     if (session) {
       await socket.join(`player:${session.playerId}`);
       socket.game = {
         playerId: session.playerId,
         currentRoom: null,
       };
+
+      const disconnectedRoom = await this.roomService.getDisconnectedRoom(
+        session.playerId,
+      );
+
+      socket.emit(GameSocketServerEvent.HELLO, {
+        data: {
+          resume: disconnectedRoom
+            ? {
+                room: disconnectedRoom,
+                kickAt: '',
+              }
+            : null,
+          playerId: session.playerId,
+        } as GameSocketEventsServer[GameSocketServerEvent.HELLO],
+      });
     } else {
       socket.disconnect();
     }
@@ -74,6 +93,24 @@ export class GameGateway {
     id?: string;
   }) {
     this.server?.to(`player:${socket.game.playerId}`)?.emit(event, {
+      data,
+      id,
+    });
+  }
+
+  emitToRoomName<E extends keyof GameSocketEventsServer>({
+    data,
+    roomName,
+    event,
+    id,
+  }: {
+    data: GameSocketEventsServer[E];
+    roomName: string;
+    event: E;
+    id?: string;
+    excludeUser?: boolean;
+  }) {
+    this.server?.to(`room:${roomName}`).emit(event, {
       data,
       id,
     });
@@ -160,5 +197,14 @@ export class GameGateway {
     @ConnectedSocket() socket: SocketWithUser,
   ) {
     return this.roomGw.gameReadyToLeave(_data, socket);
+  }
+
+  @SubscribeMessage(GameSocketClientEvent.ROOM_LEAVE)
+  gameRoomLeave(
+    @MessageBody()
+    _data: RequestType<GameSocketClientEvents['ROOM_LEAVE']>,
+    @ConnectedSocket() socket: SocketWithUser,
+  ) {
+    return this.roomGw.gameRoomLeave(_data, socket);
   }
 }

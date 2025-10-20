@@ -17,6 +17,12 @@ export enum AreaMode {
   POLYGON = 'polygon',
 }
 
+export enum RoomState {
+  LOBBY,
+  IN_GAME,
+  ROUND_FINISHED,
+}
+
 export class Round {
   constructor(options?: Partial<Round>) {
     if (options) {
@@ -88,7 +94,11 @@ export class Room {
   rounds: Round[] = [];
   players?: RoomPlayer[] | null;
   currentRound: number = 0;
-
+  // Protection: do not assign state directly
+  private _state: RoomState = RoomState.LOBBY;
+  get state(): RoomState {
+    return this._state;
+  }
   async getPlayers(): Promise<RoomPlayer[]> {
     if (!redisDirect) return [];
     const players = await redisDirect?.get(`room:${this.name}:players`);
@@ -127,5 +137,27 @@ export class Room {
     await redisDirect.del(`room:${this.name}:players`);
     await redisDirect.del(`room:${this.name}`);
     return true;
+  }
+
+  async update(data?: Partial<Room>): Promise<boolean> {
+    if (!redisDirect) return false;
+    if (data) {
+      for (const [key, value] of Object.entries(data)) {
+        this[key] = value;
+      }
+    }
+
+    await redisDirect.set(`room:${this.name}`, JSON.stringify(this));
+
+    return true;
+  }
+
+  /**
+   * DO NOT USE DIRECTLY!
+   * Use the RoomService.setState function instead to ensure all participants get the event.
+   * @param {RoomState} state
+   */
+  _setState(state: RoomState) {
+    this._state = state;
   }
 }

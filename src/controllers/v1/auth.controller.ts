@@ -16,6 +16,7 @@ export class AuthControllerV1 {
     const lookup = await this.authService.getSessionInfo(result);
 
     return {
+      success: true,
       token: result,
       playerId: lookup!.playerId,
     };
@@ -26,9 +27,17 @@ export class AuthControllerV1 {
     @Body() body: { token: string },
   ): Promise<AuthRenewSessionV1Response> {
     const result = await this.authService.renewSession(body.token);
+    if (!result) {
+      return {
+        success: false,
+      };
+    }
+    const lookup = await this.authService.getSessionInfo(body.token);
 
     return {
       success: result,
+      token: body.token,
+      playerId: lookup!.playerId,
     };
   }
 }

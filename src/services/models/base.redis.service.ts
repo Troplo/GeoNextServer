@@ -35,7 +35,7 @@ export abstract class BaseRedisService<T> {
   }
 
   async createInternal<T>(
-    entity: Omit<T, 'id' | 'version'>,
+    entity: Omit<T, 'id' | 'version' | 'lastRoom'>,
   ): Promise<T | null> {
     const id = randomUUID();
 

@@ -22,6 +22,7 @@ import { PlayerRedisService } from '../../services/models/player.redis.service';
 export class PlayerGatewayController {
   constructor(
     private readonly playerService: PlayerRedisService,
+    // fix circular dependency
     @Inject(forwardRef(() => GameGateway))
     private readonly gateway: GameGateway,
     private readonly roomPlayerRedisService: RoomPlayerRedisService,
