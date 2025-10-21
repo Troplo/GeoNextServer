@@ -1,15 +1,19 @@
-import { Injectable } from '@nestjs/common';
+import { forwardRef, Inject, Injectable } from '@nestjs/common';
 import { RoomRedisService } from './models/room.redis.service';
 import { Room } from '../classes/rooms/Room';
 import { RoomPlayerRedisService } from './models/roomPlayer.redis.service';
 import { GeoError } from '../errors';
 import { RoomPlayerRound } from '../classes/rooms/RoomPlayer';
+import { GameGateway } from '../gateways/game.gateway';
+import { GameSocketServerEvent } from '../types/socket/serverEvents';
 
 @Injectable()
 export class RoomPlayerService {
   constructor(
     private readonly roomRedisService: RoomRedisService,
     private readonly roomPlayerRedisService: RoomPlayerRedisService,
+    @Inject(forwardRef(() => GameGateway))
+    private readonly gateway: GameGateway,
   ) {}
 
   async setRoundScoreDetails({
@@ -21,32 +25,40 @@ export class RoomPlayerService {
     round: number;
     roomName: string;
     playerId: string;
-    scoreDetails: {
-      longitude: number;
-      latitude: number;
-      distance: number;
-      points: number;
-      timePassed: number;
-      guessed: boolean;
-    };
+    scoreDetails:
+      | {
+          longitude: number;
+          latitude: number;
+          distance: number;
+          points: number;
+          timePassed: number;
+          guessed: boolean;
+        }
+      | {
+          votedReRoll: boolean;
+        };
   }): Promise<RoomPlayerRound | false> {
     const player = await this.roomPlayerRedisService.lookup({
       roomName,
       playerId,
     });
 
-    console.log({ roomName, playerId, player }, 'DEBUG');
-
     if (!player) return false;
 
     const newRound = new RoomPlayerRound({
+      ...(player.getRound(round) ?? {
+        latitude: 0,
+        longitude: 0,
+        points: 0,
+        distance: 0,
+        timePassed: 0,
+        guessed: false,
+      }),
       ...scoreDetails,
       round,
     });
 
     player.insertOrUpdateRound(newRound);
-
-    console.log(`Rounds New`, player.rounds);
 
     await this.roomPlayerRedisService.update({
       update: {
@@ -58,6 +70,54 @@ export class RoomPlayerService {
       },
     });
 
+    this.gateway.emitToRoomName({
+      event: GameSocketServerEvent.ROOM_PLAYER_SCORE_DETAILS_UPDATED,
+      data: {
+        playerId: playerId,
+        round: newRound,
+      },
+      roomName,
+    });
+
     return newRound;
+  }
+
+  async setRoundCompleted({
+    round,
+    roomName,
+    playerId,
+  }: {
+    round: number;
+    roomName: string;
+    playerId: string;
+  }): Promise<RoomPlayerRound | false> {
+    const player = await this.roomPlayerRedisService.lookup({
+      roomName,
+      playerId,
+    });
+
+    if (!player) return false;
+
+    const oldRound = player.getRound(round);
+
+    // setRoundScoreDetails MUST be called first!
+    if (!oldRound) return false;
+
+    player.insertOrUpdateRound({
+      ...oldRound,
+      readyToContinue: true,
+    });
+
+    await this.roomPlayerRedisService.update({
+      update: {
+        rounds: player.rounds,
+      },
+      where: {
+        playerId: player.playerId,
+        roomName,
+      },
+    });
+
+    return player.getRound(round) || false;
   }
 }

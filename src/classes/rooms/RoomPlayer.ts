@@ -6,7 +6,13 @@ import { Round } from './Room';
 
 export class RoomPlayerRound {
   constructor(options: Partial<RoomPlayerRound> | undefined | null) {
-    if (options) Object.assign(this, options);
+    if (options) {
+      for (const key in options) {
+        if (options[key] !== undefined) {
+          this[key] = options[key];
+        }
+      }
+    }
   }
 
   version: number = 1;
@@ -17,7 +23,10 @@ export class RoomPlayerRound {
   points: number = 0;
   timePassed: number = 0;
   round: number;
+  readyToContinue: boolean = false;
+  votedReRoll: boolean = false;
 }
+
 export class RoomPlayer {
   constructor(options: Partial<RoomPlayer> | undefined | null) {
     if (options) Object.assign(this, options);
@@ -30,7 +39,7 @@ export class RoomPlayer {
   }
 
   playerId: string;
-  connected: boolean = false;
+  connected: boolean = true;
   /**
    * If the player has been disconnected for a long time, they will be kicked by the server.
    * @type {number | null}
@@ -79,13 +88,18 @@ export class RoomPlayer {
     const key = `room:${this.roomName}:players`;
     const players = await redisDirect?.get(key);
     if (!players) return false;
+    console.log('players', players);
     try {
       let parsed = JSON.parse(players) as RoomPlayer[];
-      parsed = parsed.filter((plyr) => plyr.playerId === this.playerId);
+      parsed = parsed.filter((plyr) => plyr.playerId !== this.playerId);
       await redisDirect.set(key, JSON.stringify(parsed));
       return true;
     } catch {
       return false;
     }
+  }
+
+  getRound(round: number) {
+    return this.rounds.find((rnd) => rnd.round === round);
   }
 }

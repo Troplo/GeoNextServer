@@ -10,6 +10,9 @@ export enum GameSocketClientEvent {
   GAME_POPULATE_ROUND_INFO = 'GAME_POPULATE_ROUND_INFO',
   GAME_COMMIT_GUESS = 'GAME_COMMIT_GUESS',
   GAME_READY_TO_LEAVE = 'GAME_READY_TO_LEAVE',
+  GAME_READY = 'GAME_READY',
+  GAME_READY_TO_CONTINUE = 'GAME_READY_TO_CONTINUE',
+  GAME_VOTE_TO_REROLL = 'GAME_VOTE_TO_REROLL',
 }
 
 export interface GameSocketClientEvents {
@@ -26,7 +29,10 @@ export interface GameSocketClientEvents {
   [GameSocketClientEvent.ROOM_LEAVE]: {
     roomName: string;
   };
-  [GameSocketClientEvent.GAME_START]: EmptyObject;
+  [GameSocketClientEvent.GAME_START]: {
+    roomName: string;
+    config: RoomConfig;
+  };
   [GameSocketClientEvent.GAME_POPULATE_ROUND_INFO]: {
     round: number;
     latitude: number;
@@ -42,4 +48,11 @@ export interface GameSocketClientEvents {
     round: number;
   };
   [GameSocketClientEvent.GAME_READY_TO_LEAVE]: EmptyObject;
+  [GameSocketClientEvent.GAME_READY]: EmptyObject;
+  [GameSocketClientEvent.GAME_READY_TO_CONTINUE]: {
+    nextRound: number;
+  };
+  [GameSocketClientEvent.GAME_VOTE_TO_REROLL]: {
+    round: number;
+  };
 }

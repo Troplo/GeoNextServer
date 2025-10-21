@@ -26,6 +26,7 @@ export interface SocketWithUser extends Socket {
   game: {
     playerId: string | null;
     currentRoom: string | null;
+    needsResumeData?: boolean;
   };
 }
 
@@ -57,6 +58,9 @@ export class GameGateway {
         session.playerId,
       );
 
+      if (disconnectedRoom)
+        disconnectedRoom.players = await disconnectedRoom.getPlayers();
+
       socket.emit(GameSocketServerEvent.HELLO, {
         data: {
           resume: disconnectedRoom
@@ -71,6 +75,15 @@ export class GameGateway {
     } else {
       socket.disconnect();
     }
+  }
+
+  async handleDisconnect(socket: SocketWithUser) {
+    console.log('Disconnected', socket.game);
+    if (socket.game?.currentRoom)
+      await this.roomService.disconnect({
+        roomName: socket.game.currentRoom,
+        playerId: socket.game.playerId!,
+      });
   }
 
   parse<T>(data: { data: T; id?: string }): { data: T; id?: string } {
@@ -92,7 +105,24 @@ export class GameGateway {
     event: E;
     id?: string;
   }) {
-    this.server?.to(`player:${socket.game.playerId}`)?.emit(event, {
+    socket.emit(event, {
+      data,
+      id,
+    });
+  }
+
+  emitToPlayerId<E extends keyof GameSocketEventsServer>({
+    data,
+    playerId,
+    event,
+    id,
+  }: {
+    data: GameSocketEventsServer[E];
+    playerId: string;
+    event: E;
+    id?: string;
+  }) {
+    this.server?.to(`player:${playerId}`)?.emit(event, {
       data,
       id,
     });
@@ -206,5 +236,41 @@ export class GameGateway {
     @ConnectedSocket() socket: SocketWithUser,
   ) {
     return this.roomGw.gameRoomLeave(_data, socket);
+  }
+
+  @SubscribeMessage(GameSocketClientEvent.GAME_READY)
+  gameReady(
+    @MessageBody()
+    _data: RequestType<GameSocketClientEvents['GAME_READY']>,
+    @ConnectedSocket() socket: SocketWithUser,
+  ) {
+    return this.roomGw.gameReady(_data, socket);
+  }
+
+  @SubscribeMessage(GameSocketClientEvent.GAME_READY_TO_CONTINUE)
+  gameReadyToContinue(
+    @MessageBody()
+    _data: RequestType<GameSocketClientEvents['GAME_READY_TO_CONTINUE']>,
+    @ConnectedSocket() socket: SocketWithUser,
+  ) {
+    return this.roomGw.gameReadyToContinue(_data, socket);
+  }
+
+  @SubscribeMessage(GameSocketClientEvent.ROOM_UPDATE_CONFIG)
+  roomUpdateConfig(
+    @MessageBody()
+    _data: RequestType<GameSocketClientEvents['ROOM_UPDATE_CONFIG']>,
+    @ConnectedSocket() socket: SocketWithUser,
+  ) {
+    return this.roomGw.roomUpdateConfig(_data, socket);
+  }
+
+  @SubscribeMessage(GameSocketClientEvent.GAME_VOTE_TO_REROLL)
+  gameVoteToReRoll(
+    @MessageBody()
+    _data: RequestType<GameSocketClientEvents['GAME_VOTE_TO_REROLL']>,
+    @ConnectedSocket() socket: SocketWithUser,
+  ) {
+    return this.roomGw.gameVoteToReRoll(_data, socket);
   }
 }

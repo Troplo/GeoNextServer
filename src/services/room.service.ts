@@ -5,6 +5,14 @@ import { RoomPlayerRedisService } from './models/roomPlayer.redis.service';
 import { GameGateway, SocketWithUser } from '../gateways/game.gateway';
 import { GameSocketServerEvent } from '../types/socket/serverEvents';
 import { PlayerRedisService } from './models/player.redis.service';
+import { KICK_IN_MS } from '../constants/server';
+import { RoomPlayer } from '../classes/rooms/RoomPlayer';
+
+export enum JoinResponse {
+  FAILED,
+  JOINED,
+  REJOINED,
+}
 
 @Injectable()
 export class RoomService {
@@ -51,9 +59,9 @@ export class RoomService {
     roomName: string;
     playerId: string;
     socketId: string;
-  }): Promise<boolean> {
+  }): Promise<JoinResponse> {
     const room = await this.lookup({ name: roomName });
-    if (!room) return false;
+    if (!room) return JoinResponse.FAILED;
     const joined = await this.roomPlayerRedisService.lookup({
       roomName,
       playerId,
@@ -62,19 +70,29 @@ export class RoomService {
     console.log(room, joined, playerId);
 
     if (joined && joined.connected && joined.socketId) {
-      return false;
-    } else if (joined) {
-      // If the user disconnected from the socket due to a network issue or refresh
-      const success = await this.roomPlayerRedisService.update({
-        update: {
-          connected: true,
-          socketId,
-        },
-        where: {
+      return JoinResponse.FAILED;
+    } else if (!room.started) {
+      let success: boolean = false;
+      if (joined) {
+        const plyr = await this.roomPlayerRedisService.update({
+          where: {
+            playerId,
+            roomName,
+          },
+          update: {
+            connected: true,
+            socketId: socketId,
+            kickAt: null,
+          },
+        });
+        if (plyr) success = true;
+      } else {
+        const plyr = await this.roomPlayerRedisService.create({
           roomName,
           playerId,
-        },
-      });
+        });
+        if (plyr) success = true;
+      }
 
       await this.playerService.update({
         update: {
@@ -85,26 +103,33 @@ export class RoomService {
         },
       });
 
-      return !!success;
-    } else if (!room.started) {
-      const success = await this.roomPlayerRedisService.create({
-        roomName,
+      return success ? JoinResponse.JOINED : JoinResponse.FAILED;
+    } else if (!joined?.connected) {
+      const existingPlayer = await this.roomPlayerRedisService.lookup({
         playerId,
+        roomName,
       });
 
-      await this.playerService.update({
-        update: {
-          lastRoom: roomName,
-        },
-        where: {
+      if (!existingPlayer?.connected) {
+        const reconnect = await this.reconnect({
+          roomName,
           playerId,
-        },
-      });
-
-      return !!success;
+          socketId,
+        });
+        await this.playerService.update({
+          update: {
+            lastRoom: roomName,
+          },
+          where: {
+            playerId,
+          },
+        });
+        if (reconnect) return JoinResponse.REJOINED;
+        return JoinResponse.FAILED;
+      }
     }
 
-    return false;
+    return JoinResponse.FAILED;
   }
 
   async reconnect({
@@ -116,17 +141,27 @@ export class RoomService {
     playerId: string;
     socketId: string;
   }): Promise<boolean> {
-    const success = await this.roomPlayerRedisService.update({
+    const roomPlayer = await this.roomPlayerRedisService.update({
       update: {
         connected: true,
         socketId,
+        kickAt: null,
       },
       where: {
         roomName,
         playerId,
       },
     });
-    return !!success;
+    if (roomPlayer)
+      this.gateway.emitToRoomName({
+        roomName,
+        event: GameSocketServerEvent.ROOM_PLAYER_RECONNECTED,
+        data: (await this.roomPlayerRedisService.lookup({
+          playerId,
+          roomName,
+        }))!,
+      });
+    return !!roomPlayer;
   }
 
   async disconnect({
@@ -136,17 +171,27 @@ export class RoomService {
     roomName: string;
     playerId: string;
   }): Promise<boolean> {
-    const success = await this.roomPlayerRedisService.update({
+    const roomPlayer = await this.roomPlayerRedisService.update({
       update: {
         connected: false,
         socketId: null,
+        kickAt: new Date().getTime() + KICK_IN_MS,
       },
       where: {
         roomName,
         playerId,
       },
     });
-    return !!success;
+    if (roomPlayer)
+      this.gateway.emitToRoomName({
+        roomName,
+        event: GameSocketServerEvent.ROOM_PLAYER_DISCONNECTED,
+        data: (await this.roomPlayerRedisService.lookup({
+          playerId,
+          roomName,
+        }))!,
+      });
+    return !!roomPlayer;
   }
 
   async checkIfOwned({
@@ -210,13 +255,73 @@ export class RoomService {
     }
   }
 
-  async quitRoom(roomName: string, playerId?: string) {
+  // TODO: This function could be better.
+  async quitRoom(roomName: string, playerId: string) {
     const name = `room:${roomName}`;
     const room = this.gateway.server.sockets.adapter.rooms.get(name);
 
-    if (!room) return;
+    console.log(`${roomName} ${playerId} left`);
+    try {
+      await this.playerService.update({
+        update: { lastRoom: null },
+        where: { playerId },
+      });
+    } catch {
+      // ignore errors
+    }
 
-    for (const socketId of room) {
+    // Lookup the roomPlayer regardless of socket room presence
+    const roomPlayer = await this.roomPlayerRedisService.lookup({
+      playerId,
+      roomName,
+    });
+
+    if (roomPlayer) {
+      const currentRoom = await this.lookup({ name: roomName });
+
+      if (currentRoom && currentRoom.ownerPlayerId === playerId) {
+        const players = await currentRoom.getPlayers();
+        let newOwner = players.find((p) => p.connected);
+
+        if (!newOwner) {
+          newOwner = [...players].sort(
+            (a, b) => (b.kickAt || 0) - (a.kickAt || 0),
+          )[0];
+        }
+
+        if (newOwner) {
+          await this.update({
+            update: { ownerPlayerId: newOwner.playerId },
+            where: { roomName },
+          });
+        }
+      }
+
+      this.gateway.emitToRoomName({
+        event: GameSocketServerEvent.ROOM_PLAYER_LEFT,
+        data: roomPlayer,
+        roomName,
+      });
+
+      await roomPlayer.dispose();
+    }
+
+    // If the socket room exists, remove the player from it
+    if (room) {
+      for (const socketId of room) {
+        const socket = this.gateway.server.sockets.sockets.get(
+          socketId,
+        ) as SocketWithUser;
+
+        if (socket && (socket.game?.playerId === playerId || !playerId)) {
+          if (socket.game?.currentRoom === roomName)
+            socket.game.currentRoom = null;
+          await socket.leave(roomName);
+        }
+      }
+    }
+
+    for (const socketId of room || []) {
       const socket = this.gateway.server.sockets.sockets.get(
         socketId,
       ) as SocketWithUser;
@@ -244,6 +349,24 @@ export class RoomService {
     }
   }
 
+  checkIfAnySocketsAreConnected(roomName: string, playerId?: string): boolean {
+    const name = `room:${roomName}`;
+    const room = this.gateway.server.sockets.adapter.rooms.get(name);
+
+    if (!room) return false;
+
+    for (const socketId of room) {
+      const socket = this.gateway.server.sockets.sockets.get(
+        socketId,
+      ) as SocketWithUser;
+      if (socket && (socket.game?.playerId === playerId || !playerId)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   async getDisconnectedRoom(playerId: string): Promise<Room | null> {
     const player = await this.playerService.lookup({ playerId });
     if (!player) return null;
@@ -251,11 +374,119 @@ export class RoomService {
       const room = await this.lookup({ name: player.lastRoom });
       if (!room) return null;
       const players = await room.getPlayers();
-      if (players.find((plyr) => plyr.playerId === playerId)) {
+      const roomPlayer = players.find((plyr) => plyr.playerId === playerId);
+
+      if (roomPlayer?.connected) {
+        // if the backend restarts, it will break it, but also we need to consider if the user
+        // opened a new tab
+        if (this.checkIfAnySocketsAreConnected(room.name, playerId)) {
+          // temporarily return nothing if user opened a new tab
+          return null;
+        } else {
+          await this.roomPlayerRedisService.update({
+            where: {
+              playerId,
+              roomName: room.name,
+            },
+            update: {
+              connected: false,
+              socketId: null,
+              kickAt: new Date().getTime() + KICK_IN_MS,
+            },
+          });
+        }
+      }
+
+      if (roomPlayer) {
         return room;
       }
     }
 
     return null;
+  }
+
+  emitStreetViewPopulateRequestOwner(room: Room, increment: boolean = true) {
+    const owner = room.ownerPlayerId;
+
+    const newRound = increment ? room.currentRound + 1 : room.currentRound;
+
+    this.gateway.emitToPlayerId({
+      playerId: owner,
+      event: GameSocketServerEvent.GAME_REQUEST_STREET_VIEW_POPULATE,
+      data: {
+        round: newRound,
+      },
+    });
+  }
+
+  async checkGameProgressState(room: Room) {
+    const players = await room.getPlayers();
+
+    // STATE: RE-ROLL GAME
+    const shouldReRoll = players.every((plyr) =>
+      plyr.rounds.some(
+        (rnd) => rnd.round === room.currentRound && rnd.votedReRoll,
+      ),
+    );
+
+    if (shouldReRoll && room.state === RoomState.IN_GAME) {
+      for (const player of players) {
+        const round = player.rounds.find(
+          (rnd) => rnd.round === room.currentRound,
+        );
+        if (round) {
+          round.votedReRoll = false;
+          await this.roomPlayerRedisService.update({
+            update: {
+              rounds: player.rounds,
+            },
+            where: {
+              playerId: player.playerId,
+              roomName: room.name,
+            },
+          });
+        }
+      }
+      this.emitStreetViewPopulateRequestOwner(room, false);
+    }
+
+    // STATE: FINISH ROUND
+
+    const shouldProgressRound = players.every((plyr) =>
+      plyr.rounds.some((rnd) => rnd.round === room.currentRound && rnd.guessed),
+    );
+
+    if (shouldProgressRound && room.state === RoomState.IN_GAME) {
+      await this.setState(room, RoomState.ROUND_FINISHED);
+    }
+
+    // STATE: FINISH ROUND AND CONTINUE
+    const shouldProgressRoundContinue = players.every((plyr) =>
+      plyr.rounds.some(
+        (rnd) =>
+          rnd.round === room.currentRound && rnd.guessed && rnd.readyToContinue,
+      ),
+    );
+
+    if (
+      shouldProgressRoundContinue &&
+      room.state === RoomState.ROUND_FINISHED
+    ) {
+      this.emitStreetViewPopulateRequestOwner(room);
+    }
+
+    // STATE: EXIT GAME
+
+    if (players.filter((plyr) => plyr.readyToLeave).length === players.length) {
+      this.gateway.emitToRoomName({
+        event: GameSocketServerEvent.GAME_FINISHED,
+        data: {},
+        roomName: room.name,
+      });
+      for (const player of players) {
+        await this.quitRoom(room.name, player.playerId);
+      }
+      await room.dispose();
+    }
   }
 }

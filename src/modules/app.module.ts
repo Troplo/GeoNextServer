@@ -16,6 +16,7 @@ import { RoomPlayerRedisService } from '../services/models/roomPlayer.redis.serv
 import { PlayerGatewayController } from '../controllers/gateway/player.controller';
 import { RoomGatewayController } from '../controllers/gateway/room.controller';
 import { RoomPlayerService } from '../services/roomPlayer.service';
+import { SentinelService } from '../services/sentinel.service';
 
 @Module({
   imports: [],
@@ -39,6 +40,7 @@ import { RoomPlayerService } from '../services/roomPlayer.service';
     RoomPlayerService,
     PlayerGatewayController,
     RoomGatewayController,
+    SentinelService,
   ],
 })
 export class AppModule {}

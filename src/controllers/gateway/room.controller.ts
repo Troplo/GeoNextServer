@@ -1,16 +1,12 @@
 import { forwardRef, Inject, Injectable } from '@nestjs/common';
-import { SubscribeMessage } from '@nestjs/websockets';
-import {
-  GameSocketClientEvent,
-  GameSocketClientEvents,
-} from '../../types/socket/clientEvents';
+import { GameSocketClientEvents } from '../../types/socket/clientEvents';
 import { GameGateway, SocketWithUser } from '../../gateways/game.gateway';
 import { RequestType } from '../../utils/gateway';
 import { GeoError } from '../../errors';
-import { RoomService } from '../../services/room.service';
+import { JoinResponse, RoomService } from '../../services/room.service';
 import { RoomPlayerRedisService } from '../../services/models/roomPlayer.redis.service';
 import { GameSocketServerEvent } from '../../types/socket/serverEvents';
-import { Room, RoomState, Round } from '../../classes/rooms/Room';
+import { Room, RoomConfig, RoomState, Round } from '../../classes/rooms/Room';
 import { RoomPlayerService } from '../../services/roomPlayer.service';
 
 @Injectable()
@@ -24,7 +20,6 @@ export class RoomGatewayController {
     private readonly roomPlayerService: RoomPlayerService,
   ) {}
 
-  @SubscribeMessage(GameSocketClientEvent.CREATE_ROOM)
   async createRoomRequest(
     _data: RequestType<GameSocketClientEvents['CREATE_ROOM']>,
     socket: SocketWithUser,
@@ -47,14 +42,12 @@ export class RoomGatewayController {
 
       if (!room) throw new GeoError('ROOM_NAME_UNAVAILABLE');
 
-      if (
-        !(await this.roomService.join({
-          roomName: data.data.name,
-          playerId: socket.game.playerId,
-          socketId: socket.id,
-        }))
-      )
-        throw new GeoError('ROOM_NAME_UNAVAILABLE');
+      const joined = await this.roomService.join({
+        roomName: data.data.name,
+        playerId: socket.game.playerId,
+        socketId: socket.id,
+      });
+      if (!joined) throw new GeoError('ROOM_NAME_UNAVAILABLE');
       await socket.join(`room:${data.data.name}`);
       socket.game.currentRoom = data.data.name;
 
@@ -68,6 +61,7 @@ export class RoomGatewayController {
       if (!roomPlayer) throw new GeoError('ROOM_NAME_UNAVAILABLE');
 
       roomPlayer.player = await roomPlayer.getPlayer();
+      console.log(`joined`, joined);
 
       this.gateway.emitToPlayer({
         data: room,
@@ -76,13 +70,29 @@ export class RoomGatewayController {
         id: data.id,
       });
 
-      this.gateway.emitToRoom({
-        data: roomPlayer,
-        event: GameSocketServerEvent.ROOM_PLAYER_JOINED,
-        excludeUser: true,
-        id: data.id,
-        socket,
-      });
+      console.log(`joined`, joined);
+
+      if (joined !== JoinResponse.REJOINED) {
+        this.gateway.emitToRoom({
+          data: roomPlayer,
+          event: GameSocketServerEvent.ROOM_PLAYER_JOINED,
+          excludeUser: true,
+          id: data.id,
+          socket,
+        });
+      } else {
+        if (room.started) {
+          this.gateway.emitToPlayer({
+            data: {
+              config: room.config,
+              roomName: data.data.name,
+            },
+            socket,
+            event: GameSocketServerEvent.GAME_STARTED,
+          });
+          socket.game.needsResumeData = true;
+        }
+      }
     } catch (e) {
       socket.game.currentRoom = null;
       throw e;
@@ -93,6 +103,11 @@ export class RoomGatewayController {
     _data: RequestType<GameSocketClientEvents['GAME_START']>,
     socket: SocketWithUser,
   ) {
+    const { data } =
+      this.gateway.parse<GameSocketClientEvents['GAME_START']>(_data);
+
+    if (data.roomName !== socket.game.currentRoom) return;
+
     const room = await this.roomService.lookup({
       name: socket.game.currentRoom,
     });
@@ -113,15 +128,25 @@ export class RoomGatewayController {
       },
       update: {
         started: true,
+        config: new RoomConfig({
+          ...room.config,
+          ...data.config,
+        }),
       },
     });
 
-    this.gateway.emitToRoom({
-      event: GameSocketServerEvent.GAME_STARTED,
-      data: {},
-      socket,
-      excludeUser: false,
-    });
+    if (newRoom)
+      this.gateway.emitToRoom({
+        event: GameSocketServerEvent.GAME_STARTED,
+        data: {
+          config: newRoom.config,
+          roomName: newRoom.name,
+        },
+        socket,
+        excludeUser: false,
+      });
+
+    // we can't emit the streetview population event here, we need to wait for READY first.
   }
 
   async gamePopulateRoundInfo(
@@ -152,12 +177,16 @@ export class RoomGatewayController {
       (rnd) => rnd.round === data.data.round,
     );
 
+    let round: Round;
+
     if (existingRoundIndex !== -1) {
       room.rounds[existingRoundIndex].latitude = data.data.latitude;
       room.rounds[existingRoundIndex].longitude = data.data.longitude;
       room.rounds[existingRoundIndex].warning = data.data.warning;
+      room.rounds[existingRoundIndex].timerStart = new Date().getTime();
+      round = room.rounds[existingRoundIndex];
     } else {
-      const round = new Round({
+      round = new Round({
         latitude: data.data.latitude,
         longitude: data.data.longitude,
         warning: data.data.warning,
@@ -166,13 +195,14 @@ export class RoomGatewayController {
 
       room.rounds.push(round);
       room.currentRound = round.round;
-      this.gateway.emitToRoom({
-        event: GameSocketServerEvent.GAME_NEW_ROUND,
-        data: round,
-        socket,
-      });
-      await this.roomService.setState(room, RoomState.IN_GAME);
     }
+
+    this.gateway.emitToRoom({
+      event: GameSocketServerEvent.GAME_NEW_ROUND,
+      data: round,
+      socket,
+    });
+    await this.roomService.setState(room, RoomState.IN_GAME);
 
     const newRoom = await this.roomService.update({
       update: {
@@ -219,42 +249,7 @@ export class RoomGatewayController {
 
     if (!round) return;
 
-    this.gateway.emitToRoom({
-      event: GameSocketServerEvent.ROOM_PLAYER_SCORE_DETAILS_UPDATED,
-      data: {
-        playerId: socket.game.playerId,
-        round,
-      },
-      socket,
-    });
-
-    await this.checkGameProgressState(room);
-  }
-
-  async checkGameProgressState(room: Room) {
-    const players = await room.getPlayers();
-
-    // STATE: PROGRESS ROUND
-
-    const shouldProgressRound = players.every((plyr) =>
-      plyr.rounds.some((rnd) => rnd.round === room.currentRound && rnd.guessed),
-    );
-
-    if (shouldProgressRound && room.state === RoomState.IN_GAME) {
-      await this.roomService.setState(room, RoomState.ROUND_FINISHED);
-    }
-
-    // STATE: EXIT GAME
-
-    if (players.filter((plyr) => plyr.readyToLeave).length === players.length) {
-      this.gateway.emitToRoomName({
-        event: GameSocketServerEvent.GAME_FINISHED,
-        data: {},
-        roomName: room.name,
-      });
-      await room.dispose();
-      await this.roomService.quitRoom(room.name);
-    }
+    await this.roomService.checkGameProgressState(room);
   }
 
   async gameReadyToLeave(
@@ -286,7 +281,7 @@ export class RoomGatewayController {
       },
     });
 
-    await this.checkGameProgressState(room);
+    await this.roomService.checkGameProgressState(room);
   }
 
   async gameRoomLeave(
@@ -301,5 +296,114 @@ export class RoomGatewayController {
     if (!room || !socket.game?.playerId) return;
 
     await this.roomService.quitRoom(room.name, socket.game.playerId);
+  }
+
+  async gameReady(
+    _data: RequestType<GameSocketClientEvents['GAME_READY']>,
+    socket: SocketWithUser,
+  ) {
+    // This is called to ensure the client is listening to all game StreetView events.
+    if (!socket.game?.currentRoom) return;
+    const room = await this.roomService.lookup({
+      name: socket.game.currentRoom,
+    });
+    if (!room?.started) return;
+    if (
+      !room.getRoundIsValid(room.currentRound) &&
+      socket.game.playerId === room.ownerPlayerId
+    ) {
+      // Owner needs to populate StreetView data
+      this.roomService.emitStreetViewPopulateRequestOwner(room);
+    }
+
+    // REJOIN
+    // if (socket.game.needsResumeData) {
+    if (room.getRoundIsValid(room.currentRound)) {
+      this.gateway.emitToPlayer({
+        event: GameSocketServerEvent.GAME_NEW_ROUND,
+        data: room.getRound(room.currentRound)!,
+        socket,
+      });
+      // socket.game.needsResumeData = false;
+      // }
+    }
+  }
+
+  async gameReadyToContinue(
+    _data: RequestType<GameSocketClientEvents['GAME_READY_TO_CONTINUE']>,
+    socket: SocketWithUser,
+  ) {
+    console.log(_data);
+    const { data } =
+      this.gateway.parse<GameSocketClientEvents['GAME_READY_TO_CONTINUE']>(
+        _data,
+      );
+
+    if (!socket.game?.currentRoom) return;
+    const room = await this.roomService.lookup({
+      name: socket.game.currentRoom,
+    });
+    if (!room?.started) return;
+    if (room.currentRound + 1 !== data.nextRound) return;
+
+    await this.roomPlayerService.setRoundCompleted({
+      roomName: room.name,
+      round: room.currentRound,
+      playerId: socket.game.playerId!,
+    });
+
+    await this.roomService.checkGameProgressState(room);
+  }
+
+  async roomUpdateConfig(
+    _data: RequestType<GameSocketClientEvents['ROOM_UPDATE_CONFIG']>,
+    socket: SocketWithUser,
+  ) {
+    const { data } =
+      this.gateway.parse<GameSocketClientEvents['ROOM_UPDATE_CONFIG']>(_data);
+    const room = await this.roomService.lookup({
+      name: socket.game.currentRoom,
+    });
+
+    if (!room) return;
+
+    const allowed = await this.roomService.checkIfOwned({
+      playerId: socket.game.playerId!,
+      roomName: room.name,
+    });
+
+    if (!allowed) return;
+
+    room.config = new RoomConfig({
+      ...room.config,
+      ...data.config,
+    });
+
+    await room.update();
+  }
+
+  async gameVoteToReRoll(
+    _data: RequestType<GameSocketClientEvents['GAME_VOTE_TO_REROLL']>,
+    socket: SocketWithUser,
+  ) {
+    const { data } =
+      this.gateway.parse<GameSocketClientEvents['GAME_VOTE_TO_REROLL']>(_data);
+
+    const room = await this.roomService.lookup({
+      name: socket.game.currentRoom,
+    });
+
+    if (!room || !room.config.allowReRoll) return;
+
+    await this.roomPlayerService.setRoundScoreDetails({
+      round: data.round,
+      playerId: socket.game.playerId!,
+      scoreDetails: {
+        votedReRoll: true,
+      },
+      roomName: room.name,
+    });
+
+    await this.roomService.checkGameProgressState(room);
   }
 }

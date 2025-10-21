@@ -40,6 +40,7 @@ export class Round {
   latitude: number;
   longitude: number;
   warning: boolean;
+  timerStart: number = new Date().getTime();
   version: number = 1;
 }
 
@@ -94,12 +95,15 @@ export class Room {
   rounds: Round[] = [];
   players?: RoomPlayer[] | null;
   currentRound: number = 0;
+  timerStart: number = new Date().getTime();
+  createdAt: number = new Date().getTime();
+
   // Protection: do not assign state directly
   private _state: RoomState = RoomState.LOBBY;
   get state(): RoomState {
     return this._state;
   }
-  async getPlayers(): Promise<RoomPlayer[]> {
+  async getPlayers(propagateError: boolean = false): Promise<RoomPlayer[]> {
     if (!redisDirect) return [];
     const players = await redisDirect?.get(`room:${this.name}:players`);
 
@@ -118,6 +122,9 @@ export class Room {
       return importedPlayers;
     } catch (e) {
       console.error(e);
+      if (propagateError) {
+        throw e;
+      }
       return [];
     }
   }
