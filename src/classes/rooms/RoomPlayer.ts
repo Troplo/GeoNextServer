@@ -25,6 +25,17 @@ export class RoomPlayerRound {
   round: number;
   readyToContinue: boolean = false;
   votedReRoll: boolean = false;
+
+  reset() {
+    this.guessed = false;
+    this.latitude = 0;
+    this.longitude = 0;
+    this.votedReRoll = false;
+    this.points = 0;
+    this.timePassed = 0;
+    this.distance = 0;
+    this.readyToContinue = false;
+  }
 }
 
 export class RoomPlayer {
@@ -62,6 +73,7 @@ export class RoomPlayer {
   }
 
   insertOrUpdateRound(round: RoomPlayerRound): boolean {
+    console.trace(round);
     const existingIndex = this.rounds.findIndex(
       (rnd) => rnd.round === round.round,
     );

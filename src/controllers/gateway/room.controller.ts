@@ -6,7 +6,7 @@ import { GeoError } from '../../errors';
 import { JoinResponse, RoomService } from '../../services/room.service';
 import { RoomPlayerRedisService } from '../../services/models/roomPlayer.redis.service';
 import { GameSocketServerEvent } from '../../types/socket/serverEvents';
-import { Room, RoomConfig, RoomState, Round } from '../../classes/rooms/Room';
+import { RoomConfig, RoomState, Round } from '../../classes/rooms/Room';
 import { RoomPlayerService } from '../../services/roomPlayer.service';
 
 @Injectable()
@@ -249,6 +249,11 @@ export class RoomGatewayController {
 
     if (!round) return;
 
+    // If a player refreshes on the map screen, the game doesn't know what to do
+    // player can re-guess, and it will fix it, if they already have guessed
+    // the server will reject their new guess to prevent cheating, but will update client state
+    if (room.state !== RoomState.IN_GAME)
+      await this.roomService.setState(room, RoomState.IN_GAME);
     await this.roomService.checkGameProgressState(room);
   }
 

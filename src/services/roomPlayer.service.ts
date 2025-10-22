@@ -45,41 +45,58 @@ export class RoomPlayerService {
 
     if (!player) return false;
 
-    const newRound = new RoomPlayerRound({
-      ...(player.getRound(round) ?? {
-        latitude: 0,
-        longitude: 0,
-        points: 0,
-        distance: 0,
-        timePassed: 0,
-        guessed: false,
-      }),
-      ...scoreDetails,
-      round,
-    });
+    const existingRound = player.getRound(round);
+    if (
+      !existingRound ||
+      !existingRound?.guessed ||
+      ('votedReRoll' in scoreDetails &&
+        !('longitude' in scoreDetails) &&
+        !('latitude' in scoreDetails))
+    ) {
+      const newRound = new RoomPlayerRound({
+        ...(existingRound ?? {
+          latitude: 0,
+          longitude: 0,
+          points: 0,
+          distance: 0,
+          timePassed: 0,
+          guessed: false,
+        }),
+        ...scoreDetails,
+        round,
+      });
 
-    player.insertOrUpdateRound(newRound);
+      player.insertOrUpdateRound(newRound);
 
-    await this.roomPlayerRedisService.update({
-      update: {
-        rounds: player.rounds,
-      },
-      where: {
-        playerId: player.playerId,
+      await this.roomPlayerRedisService.update({
+        update: {
+          rounds: player.rounds,
+        },
+        where: {
+          playerId: player.playerId,
+          roomName,
+        },
+      });
+      this.gateway.emitToRoomName({
+        event: GameSocketServerEvent.ROOM_PLAYER_SCORE_DETAILS_UPDATED,
+        data: {
+          playerId: playerId,
+          round: newRound,
+        },
         roomName,
-      },
-    });
-
-    this.gateway.emitToRoomName({
-      event: GameSocketServerEvent.ROOM_PLAYER_SCORE_DETAILS_UPDATED,
-      data: {
-        playerId: playerId,
-        round: newRound,
-      },
-      roomName,
-    });
-
-    return newRound;
+      });
+      return newRound;
+    } else {
+      this.gateway.emitToRoomName({
+        event: GameSocketServerEvent.ROOM_PLAYER_SCORE_DETAILS_UPDATED,
+        data: {
+          playerId: playerId,
+          round: existingRound,
+        },
+        roomName,
+      });
+      return existingRound;
+    }
   }
 
   async setRoundCompleted({
@@ -103,10 +120,9 @@ export class RoomPlayerService {
     // setRoundScoreDetails MUST be called first!
     if (!oldRound) return false;
 
-    player.insertOrUpdateRound({
-      ...oldRound,
-      readyToContinue: true,
-    });
+    oldRound.readyToContinue = true;
+
+    player.insertOrUpdateRound(oldRound);
 
     await this.roomPlayerRedisService.update({
       update: {

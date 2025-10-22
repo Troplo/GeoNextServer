@@ -435,7 +435,7 @@ export class RoomService {
           (rnd) => rnd.round === room.currentRound,
         );
         if (round) {
-          round.votedReRoll = false;
+          round.reset();
           await this.roomPlayerRedisService.update({
             update: {
               rounds: player.rounds,
@@ -444,6 +444,15 @@ export class RoomService {
               playerId: player.playerId,
               roomName: room.name,
             },
+          });
+
+          this.gateway.emitToRoomName({
+            event: GameSocketServerEvent.ROOM_PLAYER_SCORE_DETAILS_UPDATED,
+            data: {
+              playerId: player.playerId,
+              round: round,
+            },
+            roomName: room.name,
           });
         }
       }

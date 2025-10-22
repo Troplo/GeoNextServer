@@ -1,4 +1,6 @@
 export enum Experiments {
+  GAME_RECONNECT_FORCE_RERENDER = 'GAME_RECONNECT_FORCE_RERENDER',
+  REROLL_EASTER_EGG_CHANCE = 'REROLL_EASTER_EGG_CHANCE',
   GAME_AUTO_RECONNECT = 'GAME_AUTO_RECONNECT',
   DEBUG_MENU = 'DEBUG_MENU',
   INTERACTIVE_BUTTONS = 'INTERACTIVE_BUTTONS',
@@ -14,11 +16,23 @@ export type ExperimentsLegacy = Experiments | ExperimentsMeta;
 // Experiments with the same keys may sync from Flowinity account.
 export function getExperiments() {
   return {
+    GAME_RECONNECT_FORCE_RERENDER: false,
+    REROLL_EASTER_EGG_CHANCE: 0.05,
     GAME_AUTO_RECONNECT: true,
     DEBUG_MENU: true,
     INTERACTIVE_BUTTONS: true,
     DISABLE_ANIMATIONS: false,
     meta: {
+      GAME_RECONNECT_FORCE_RERENDER: {
+        description: 'Force rerender the game on reconnection.',
+        createdAt: '2025-10-22T00:00:00.000Z',
+        versions: [2],
+      },
+      REROLL_EASTER_EGG_CHANCE: {
+        description: 'Chance of Reroll easter egg audio playback. (FLOAT)',
+        createdAt: '2025-10-22T00:00:00.000Z',
+        versions: [2],
+      },
       GAME_AUTO_RECONNECT: {
         description:
           "Automatically reconnect when there's a network issue while playing the game.",
