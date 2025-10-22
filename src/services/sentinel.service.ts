@@ -103,7 +103,6 @@ export class SentinelService implements OnModuleInit, OnModuleDestroy {
         let players: RoomPlayer[] = [];
         try {
           players = await room.getPlayers(true);
-          console.log(players);
           disconnectedPlayers = players.filter(
             (plyr) => !plyr.connected && plyr.kickAt && plyr.kickAt <= NOW,
           );
@@ -173,7 +172,6 @@ export class SentinelService implements OnModuleInit, OnModuleDestroy {
           name: roomName,
         });
         if (room) {
-          console.log(`calling for ${room.name}`);
           await this.roomService.checkGameProgressState(room);
         }
       }
@@ -181,7 +179,6 @@ export class SentinelService implements OnModuleInit, OnModuleDestroy {
       if (playersToPurge.length)
         Logger.log(`Successfully purged ${playersToPurge.length} players`);
 
-      console.log(playersToPurge);
       for (const { room, reason } of roomsToPurge) {
         try {
           Logger.log(`Purging room ${room.name} for reason ${reason}!`);
