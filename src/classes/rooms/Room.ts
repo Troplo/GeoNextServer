@@ -1,6 +1,6 @@
 import { RoomPlayer } from './RoomPlayer';
 import { redisDirect } from '../../services/redis.service';
-import { Player } from '../players/Player';
+import { FeatureCollection } from 'geojson';
 
 export enum GameMode {
   CLASSIC = 'classic',
@@ -69,7 +69,10 @@ export class RoomConfig {
   timeLimitation: number = 0;
   zoomControl: boolean = true;
   bboxObj: number[] | undefined;
-  version: number = 1;
+  // version 2 fields
+  geoJson: FeatureCollection | null = null;
+
+  version: number = 2;
 }
 
 export class Room {

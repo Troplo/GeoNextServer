@@ -294,6 +294,11 @@ export class RoomService {
             update: { ownerPlayerId: newOwner.playerId },
             where: { roomName },
           });
+          this.gateway.emitToRoomName({
+            event: GameSocketServerEvent.ROOM_UPDATE,
+            data: (await this.lookup({ name: roomName }))!,
+            roomName,
+          });
         }
       }
 

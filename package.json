@@ -27,6 +27,7 @@
     "@nestjs/platform-socket.io": "^11.1.6",
     "@nestjs/websockets": "^11.1.6",
     "@troplo/snowflake": "^1.1.0",
+    "@types/geojson": "^7946.0.16",
     "ioredis": "^5.8.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
